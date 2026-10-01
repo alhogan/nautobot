@@ -151,7 +151,9 @@ class NautobotTestRunner(DiscoverRunner):
 
                     # Extra block added for Nautobot
                     if settings.TEST_USE_FACTORIES:
-                        command = ["generate_test_data", "--flush", "--no-input"]
+                        # --sparse: keep randomizing optional fields so tests exercise both populated and
+                        # empty cases, and the seeded random sequence remains stable for reproducibility.
+                        command = ["generate_test_data", "--flush", "--no-input", "--sparse"]
                         if settings.TEST_FACTORY_SEED is not None:
                             command += ["--seed", settings.TEST_FACTORY_SEED]
                         if self.cache_test_fixtures:

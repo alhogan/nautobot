@@ -44,6 +44,7 @@ from nautobot.core.forms import (
 )
 from nautobot.core.forms.constants import BOOLEAN_WITH_BLANK_CHOICES
 from nautobot.core.forms.fields import LaxURLField
+from nautobot.core.templatetags.helpers import hyperlinked_object
 from nautobot.core.utils.config import get_settings_or_config
 from nautobot.extras.forms import (
     CustomFieldModelBulkEditFormMixin,
@@ -144,6 +145,7 @@ from .models import (
     DeviceType,
     FrontPort,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceRedundancyGroupAssociation,
@@ -2272,6 +2274,12 @@ class DeviceForm(LocatableModelFormMixin, NautobotModelForm, TenancyForm, LocalC
         queryset=SoftwareVersion.objects.all(),
         required=False,
     )
+    installed_asset = DynamicModelChoiceField(
+        queryset=HardwareAsset.objects.all(),
+        required=False,
+        label="Installed hardware asset",
+        help_text="Must be one of this device's associated hardware assets",
+    )
     comments = CommentField()
 
     class Meta:
@@ -2282,6 +2290,7 @@ class DeviceForm(LocatableModelFormMixin, NautobotModelForm, TenancyForm, LocalC
             "device_type",
             "serial",
             "asset_tag",
+            "installed_asset",
             "software_image_files",
             "software_version",
             "location",
@@ -2321,6 +2330,33 @@ class DeviceForm(LocatableModelFormMixin, NautobotModelForm, TenancyForm, LocalC
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        if self.instance.present_in_database:
+            # Limit installed_asset choices to this device's associated hardware assets
+            self.fields["installed_asset"].widget.add_query_param("device", self.instance.pk)
+        else:
+            # An asset must be associated to the device before it can be installed (two-step, by design)
+            self.fields["installed_asset"].disabled = True
+
+        # serial and asset_tag are read-only mirrors of the installed hardware asset. Disabled fields
+        # fall back to their initial (instance) values on submit, so the mirrors pass validation unchanged.
+        has_installed_asset = self.instance.present_in_database and self.instance.installed_asset_id is not None
+        if has_installed_asset:
+            mirror_help_text = "Owned by the installed hardware asset; edit the asset instead."
+        else:
+            mirror_help_text = "Set by creating a hardware asset and installing it on this device."
+        for field_name in ("serial", "asset_tag"):
+            self.fields[field_name].disabled = True
+            self.fields[field_name].help_text = mirror_help_text
+        if has_installed_asset:
+            # device_type is likewise owned by the installed asset; it changes only via cutover.
+            self.fields["device_type"].disabled = True
+            self.fields["manufacturer"].disabled = True
+            self.fields[
+                "device_type"
+            ].help_text = (
+                "Owned by the installed hardware asset; it changes by cutting over to an asset of the new type."
+            )
 
         if self.instance.present_in_database:
             # Compile list of choices for primary IPv4 and IPv6 addresses
@@ -2454,7 +2490,6 @@ class DeviceBulkEditForm(
     comments = CommentField(widget=SmallTextarea, label="Comments")
     tenant = DynamicModelChoiceField(queryset=Tenant.objects.all(), required=False)
     platform = DynamicModelChoiceField(queryset=Platform.objects.all(), required=False)
-    serial = forms.CharField(max_length=CHARFIELD_MAX_LENGTH, required=False, label="Serial Number")
     secrets_group = DynamicModelChoiceField(queryset=SecretsGroup.objects.all(), required=False)
     device_redundancy_group = DynamicModelChoiceField(queryset=DeviceRedundancyGroup.objects.all(), required=False)
     device_redundancy_group_priority = forms.IntegerField(required=False, min_value=1)
@@ -2469,7 +2504,6 @@ class DeviceBulkEditForm(
         nullable_fields = [
             "tenant",
             "platform",
-            "serial",
             "rack",
             "position",
             "face",
@@ -2581,6 +2615,21 @@ class DeviceFilterForm(
     has_software_version = forms.NullBooleanField(
         required=False,
         label="Has software version",
+        widget=StaticSelect2(choices=BOOLEAN_WITH_BLANK_CHOICES),
+    )
+    hardware_assets = DynamicModelMultipleChoiceField(
+        queryset=HardwareAsset.objects.all(),
+        required=False,
+        label="Associated hardware assets",
+    )
+    has_hardware_assets = forms.NullBooleanField(
+        required=False,
+        label="Has associated hardware assets",
+        widget=StaticSelect2(choices=BOOLEAN_WITH_BLANK_CHOICES),
+    )
+    has_installed_asset = forms.NullBooleanField(
+        required=False,
+        label="Has an installed hardware asset",
         widget=StaticSelect2(choices=BOOLEAN_WITH_BLANK_CHOICES),
     )
     has_console_ports = forms.NullBooleanField(
@@ -2844,6 +2893,142 @@ class ModuleFilterForm(
     has_rear_ports = forms.NullBooleanField(
         required=False,
         label="Has rear ports",
+        widget=StaticSelect2(choices=BOOLEAN_WITH_BLANK_CHOICES),
+    )
+    tags = TagFilterField(model)
+
+
+#
+# Hardware Assets
+#
+
+
+class HardwareAssetForm(NautobotModelForm, TenancyForm):
+    manufacturer = DynamicModelChoiceField(
+        queryset=Manufacturer.objects.all(),
+        required=False,
+        initial_params={"device_types": "$device_type"},
+    )
+    device_type = DynamicModelChoiceField(
+        queryset=DeviceType.objects.all(),
+        query_params={"manufacturer": "$manufacturer"},
+    )
+    device = DynamicModelChoiceField(
+        queryset=Device.objects.all(),
+        required=False,
+        label="Associated device",
+        help_text="Logical device this asset is associated with (staged or installed)",
+    )
+    location = DynamicModelChoiceField(
+        queryset=Location.objects.all(),
+        required=False,
+        label="Location",
+        query_params={"content_type": HardwareAsset._meta.label_lower},
+        help_text="Physical location of the asset while not installed (e.g. a depot or warehouse)",
+    )
+
+    class Meta:
+        model = HardwareAsset
+        fields = [
+            "manufacturer",
+            "device_type",
+            "status",
+            "serial",
+            "asset_tag",
+            "device",
+            "location",
+            "tenant_group",
+            "tenant",
+            "comments",
+            "tags",
+        ]
+        help_texts = {
+            "serial": "Hardware asset serial number",
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # An installed asset derives its physical location from its device; gray out the field
+        # and show the derived location instead. Disabled fields fall back to `initial` (None)
+        # on submit, so the asset's own location stays null while installed.
+        if self.instance.present_in_database and self.instance.is_installed:
+            self.fields["location"].disabled = True
+            self.fields["location"].help_text = format_html(
+                "Derived from the installed device&#8217;s location: {}",
+                hyperlinked_object(self.instance.installed_in.location),
+            )
+
+
+class HardwareAssetBulkEditForm(
+    TagsBulkEditFormMixin,
+    StatusModelBulkEditFormMixin,
+    NautobotBulkEditForm,
+):
+    pk = forms.ModelMultipleChoiceField(queryset=HardwareAsset.objects.all(), widget=forms.MultipleHiddenInput())
+    device_type = DynamicModelChoiceField(queryset=DeviceType.objects.all(), required=False)
+    location = DynamicModelChoiceField(
+        queryset=Location.objects.all(),
+        required=False,
+        query_params={"content_type": HardwareAsset._meta.label_lower},
+    )
+    tenant = DynamicModelChoiceField(queryset=Tenant.objects.all(), required=False)
+
+    class Meta:
+        model = HardwareAsset
+        nullable_fields = [
+            "location",
+            "tenant",
+            "comments",
+        ]
+
+
+class HardwareAssetFilterForm(
+    NautobotFilterForm,
+    LocatableModelFilterFormMixin,
+    TenancyFilterForm,
+    StatusModelFilterFormMixin,
+):
+    model = HardwareAsset
+    field_order = [
+        "q",
+        "manufacturer",
+        "device_type",
+        "device",
+        "is_installed",
+        "has_device",
+        "status",
+        "location",
+        "tenant_group",
+        "tenant",
+    ]
+    q = forms.CharField(required=False, label="Search")
+    manufacturer = DynamicModelMultipleChoiceField(
+        queryset=Manufacturer.objects.all(),
+        to_field_name="name",
+        required=False,
+        label="Manufacturer",
+    )
+    device_type = DynamicModelMultipleChoiceField(
+        queryset=DeviceType.objects.all(),
+        required=False,
+        label="Device type",
+        query_params={"manufacturer": "$manufacturer"},
+    )
+    device = DynamicModelMultipleChoiceField(
+        queryset=Device.objects.all(),
+        to_field_name="name",
+        required=False,
+        label="Associated device",
+    )
+    is_installed = forms.NullBooleanField(
+        required=False,
+        label="Is installed",
+        widget=StaticSelect2(choices=BOOLEAN_WITH_BLANK_CHOICES),
+    )
+    has_device = forms.NullBooleanField(
+        required=False,
+        label="Is associated to a device",
         widget=StaticSelect2(choices=BOOLEAN_WITH_BLANK_CHOICES),
     )
     tags = TagFilterField(model)

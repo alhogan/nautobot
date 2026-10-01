@@ -161,6 +161,28 @@ class DeviceStatusChoices(ChoiceSet):
     )
 
 
+class HardwareAssetStatusChoices(ChoiceSet):
+    STATUS_ORDERED = "ordered"
+    STATUS_RECEIVED = "received"
+    STATUS_SPARE = "spare"
+    STATUS_STAGED = "staged"
+    STATUS_ACTIVE = "active"
+    STATUS_RMA = "rma"
+    STATUS_DECOMMISSIONING = "decommissioning"
+    STATUS_DECOMMISSIONED = "decommissioned"
+
+    CHOICES = (
+        (STATUS_ORDERED, "Ordered"),
+        (STATUS_RECEIVED, "Received"),
+        (STATUS_SPARE, "Spare"),
+        (STATUS_STAGED, "Staged"),
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_RMA, "RMA"),
+        (STATUS_DECOMMISSIONING, "Decommissioning"),
+        (STATUS_DECOMMISSIONED, "Decommissioned"),
+    )
+
+
 class DeviceUniquenessChoices(ChoiceSet):
     LOCATION_TENANT_NAME = "location_tenant_name"
     NAME = "name"

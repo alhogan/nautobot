@@ -11,7 +11,7 @@ from nautobot.core.tables import (
     TagColumn,
     ToggleColumn,
 )
-from nautobot.core.templatetags.helpers import HTML_NONE, humanize_speed
+from nautobot.core.templatetags.helpers import HTML_NONE, humanize_speed, hyperlinked_object
 from nautobot.dcim.models import (
     ConsolePort,
     ConsoleServerPort,
@@ -21,6 +21,7 @@ from nautobot.dcim.models import (
     DeviceBay,
     DeviceRedundancyGroup,
     FrontPort,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceRedundancyGroupAssociation,
@@ -80,6 +81,7 @@ __all__ = (
     "DeviceRedundancyGroupTable",
     "DeviceTable",
     "FrontPortTable",
+    "HardwareAssetTable",
     "InterfaceRedundancyGroupAssociationTable",
     "InterfaceRedundancyGroupTable",
     "InterfaceTable",
@@ -1685,4 +1687,56 @@ class VirtualDeviceContextTable(StatusTableMixin, RoleTableMixin, BaseTable):
             "tenant",
             "primary_ip",
             "interface_count",
+        )
+
+
+class HardwareAssetTable(StatusTableMixin, BaseTable):
+    pk = ToggleColumn()
+    device_type = tables.Column(linkify=True, verbose_name="Device Type")
+    manufacturer = tables.Column(accessor="device_type__manufacturer", linkify=True, verbose_name="Manufacturer")
+    serial = tables.Column(linkify=True, verbose_name="Serial Number")
+    asset_tag = tables.Column(linkify=True, verbose_name="Asset Tag")
+    device = tables.Column(linkify=True, verbose_name="Associated Device")
+    is_installed = BooleanColumn(accessor="is_installed", verbose_name="Installed", orderable=False)
+    # empty_values=() so render_location() is invoked even when the asset's own location is null (installed case)
+    location = tables.Column(empty_values=())
+    tenant = TenantColumn()
+    tags = TagColumn(url_name="dcim:hardwareasset_list")
+
+    def render_location(self, record):
+        """An installed asset's location derives from its device; render it de-emphasized to show that."""
+        if record.is_installed:
+            return format_html(
+                '<span class="text-muted" title="Derived from the installed device\'s location">{}</span>',
+                hyperlinked_object(record.installed_in.location),
+            )
+        if record.location is not None:
+            return hyperlinked_object(record.location)
+        return HTML_NONE
+
+    class Meta(BaseTable.Meta):
+        model = HardwareAsset
+        fields = (
+            "pk",
+            "manufacturer",
+            "device_type",
+            "serial",
+            "asset_tag",
+            "status",
+            "device",
+            "is_installed",
+            "location",
+            "tenant",
+            "tags",
+        )
+        default_columns = (
+            "pk",
+            "manufacturer",
+            "device_type",
+            "serial",
+            "asset_tag",
+            "status",
+            "device",
+            "is_installed",
+            "location",
         )

@@ -1,0 +1,4 @@
+Added `HardwareAsset` model to DCIM, representing a physical serialized piece of whole-device hardware tracked independently of any logical Device, with its own lifecycle statuses.
+Added `Device.installed_asset` field designating which of a Device's associated hardware assets is the installed one.
+Added a data migration that creates an installed hardware asset for every existing Device with a serial or asset tag, mapping the device status to an appropriate asset lifecycle status.
+Added a `Create Missing Hardware Assets` system job that creates and installs an empty-identity hardware asset for every device that has none.

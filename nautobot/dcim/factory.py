@@ -52,6 +52,7 @@ from nautobot.dcim.models import (
     DeviceType,
     DeviceTypeToSoftwareImageFile,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceTemplate,
     InterfaceVDCAssignment,
@@ -201,11 +202,9 @@ class DeviceFactory(PrimaryModelFactory):
     class Meta:
         model = Device
         exclude = (
-            "has_asset_tag",
             "has_comments",
             "has_device_redundancy_group",
             "has_platform",
-            "has_serial",
             "has_tenant",
         )
 
@@ -224,6 +223,8 @@ class DeviceFactory(PrimaryModelFactory):
     )
     name = factory.LazyAttributeSequence(lambda o, n: f"{o.device_type.model}-{n + 1}")
 
+    # Identity-adjacent fields are weighted heavily toward being populated so generated data reads as
+    # complete in the UI, while still guaranteeing at least one empty value per cycle for filter tests.
     has_tenant = NautobotBoolIterator()
     tenant = factory.Maybe("has_tenant", random_instance(Tenant))
     has_platform = NautobotBoolIterator()
@@ -233,11 +234,8 @@ class DeviceFactory(PrimaryModelFactory):
         None,
     )
 
-    has_serial = NautobotBoolIterator()
-    serial = factory.Maybe("has_serial", factory.Faker("ean", length=8), "")
-
-    has_asset_tag = NautobotBoolIterator()
-    asset_tag = factory.Maybe("has_asset_tag", UniqueFaker("uuid4"), None)
+    # serial and asset_tag are read-only mirrors of the installed hardware asset; the
+    # HardwareAssetFactory populates them on the devices it installs assets into.
 
     has_device_redundancy_group = NautobotBoolIterator()
     device_redundancy_group = factory.Maybe(
@@ -1157,6 +1155,66 @@ class VirtualDeviceContextFactory(PrimaryModelFactory):
                 extracted = get_random_instances(VRF.objects.all())
             for vrf in extracted:
                 VRFDeviceAssignmentFactory.create(virtual_device_context=self, vrf=vrf)
+
+
+class HardwareAssetFactory(PrimaryModelFactory):
+    """Create HardwareAssets in a mix of lifecycle states: spares in depots, staged against Devices, and installed."""
+
+    class Meta:
+        model = HardwareAsset
+        exclude = (
+            "has_comments",
+            "has_device",
+        )
+
+    has_device = NautobotBoolIterator()
+    device = factory.Maybe(
+        "has_device",
+        random_instance(Device, allow_null=False),
+        None,
+    )
+    # An asset associated to a Device shares its hardware type so it is eligible for installation;
+    # unassociated spares get a random type.
+    device_type = factory.Maybe(
+        "has_device",
+        factory.LazyAttribute(lambda asset: asset.device.device_type),
+        random_instance(DeviceType, allow_null=False),
+    )
+    # Association state drives status coherence: see the install() post-generation hook for
+    # associated assets; unassociated assets get a random not-in-service status here.
+    status = random_instance(
+        lambda: Status.objects.get_for_model(HardwareAsset).exclude(name__in=["Active", "Staged"]),
+        allow_null=False,
+    )
+    # Serial is unknown only while an asset is on order; every other asset is fully serialized.
+    serial = factory.LazyAttributeSequence(
+        lambda asset, n: None if getattr(asset.status, "name", "") == "Ordered" else f"SN{n:08d}"
+    )
+    asset_tag = factory.Sequence(lambda n: f"HWA-{n:05d}")
+    # Every asset carries a physical location; Device.save() clears it automatically for the
+    # asset designated as installed (its location then derives from the device).
+    location = random_instance(
+        lambda: Location.objects.filter(location_type__content_types=ContentType.objects.get_for_model(HardwareAsset)),
+        allow_null=False,
+    )
+    tenant = random_instance(Tenant, allow_null=False)
+    has_comments = NautobotBoolIterator()
+    comments = factory.Maybe("has_comments", factory.Faker("sentence"), "")
+
+    @factory.post_generation
+    def install(self, create, extracted, **kwargs):
+        """Make the first associated asset per Device its installed asset; later ones remain staged."""
+        if not create or self.device is None:
+            return
+        hardware_asset_statuses = Status.objects.get_for_model(HardwareAsset)
+        if self.device.installed_asset_id is None:
+            self.status = hardware_asset_statuses.get(name="Active")
+            self.save()
+            self.device.installed_asset = self
+            self.device.save()
+        else:
+            self.status = hardware_asset_statuses.get(name="Staged")
+            self.save()
 
 
 class InterfaceVDCAssignmentFactory(BaseModelFactory):

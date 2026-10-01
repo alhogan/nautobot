@@ -73,6 +73,7 @@ from nautobot.dcim.models import (
     DeviceTypeToSoftwareImageFile,
     FrontPort,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceRedundancyGroupAssociation,
@@ -971,6 +972,26 @@ class DeviceFilterSet(
         queryset=VRF.objects.all(),
         to_field_name="rd",
         label="VRFs (ID or RD)",
+    )
+    hardware_assets = NaturalKeyOrPKMultipleChoiceFilter(
+        prefers_id=True,
+        queryset=HardwareAsset.objects.all(),
+        to_field_name="serial",
+        label="Associated hardware asset (serial or ID)",
+    )
+    has_hardware_assets = RelatedMembershipBooleanFilter(
+        field_name="hardware_assets",
+        label="Has associated hardware assets",
+    )
+    installed_asset = NaturalKeyOrPKMultipleChoiceFilter(
+        prefers_id=True,
+        queryset=HardwareAsset.objects.all(),
+        to_field_name="serial",
+        label="Installed hardware asset (serial or ID)",
+    )
+    has_installed_asset = RelatedMembershipBooleanFilter(
+        field_name="installed_asset",
+        label="Has an installed hardware asset",
     )
 
     def filter_ip_addresses(self, queryset, name, value):
@@ -2690,6 +2711,66 @@ class InterfaceVDCAssignmentFilterSet(NautobotFilterSet):
             "interface",
             "virtual_device_context",
         ]
+
+
+class HardwareAssetFilterSet(
+    NautobotFilterSet,
+    LocatableModelFilterSetMixin,
+    StatusModelFilterSetMixin,
+    TenancyModelFilterSetMixin,
+):
+    q = SearchFilter(
+        filter_predicates={
+            "asset_tag": {
+                "lookup_expr": "icontains",
+                "preprocessor": str.strip,
+            },
+            "serial": {
+                "lookup_expr": "icontains",
+                "preprocessor": str.strip,
+            },
+            "device_type__manufacturer__name": {
+                "lookup_expr": "icontains",
+                "preprocessor": str.strip,
+            },
+            "device_type__model": {
+                "lookup_expr": "icontains",
+                "preprocessor": str.strip,
+            },
+            "device__name": {
+                "lookup_expr": "icontains",
+                "preprocessor": str.strip,
+            },
+        }
+    )
+    device = NaturalKeyOrPKMultipleChoiceFilter(
+        queryset=Device.objects.all(),
+        to_field_name="name",
+        label="Associated device (name or ID)",
+    )
+    device_type = NaturalKeyOrPKMultipleChoiceFilter(
+        queryset=DeviceType.objects.all(),
+        to_field_name="model",
+        label="Device type (model or ID)",
+    )
+    manufacturer = NaturalKeyOrPKMultipleChoiceFilter(
+        field_name="device_type__manufacturer",
+        queryset=Manufacturer.objects.all(),
+        to_field_name="name",
+        label="Manufacturer (name or ID)",
+    )
+    is_installed = RelatedMembershipBooleanFilter(
+        field_name="installed_in",
+        label="Is some device's installed asset",
+    )
+    has_device = RelatedMembershipBooleanFilter(
+        field_name="device",
+        label="Is associated to a device",
+    )
+
+    class Meta:
+        model = HardwareAsset
+        fields = "__all__"
 
 
 class ModuleFamilyFilterSet(NautobotFilterSet):

@@ -11,6 +11,7 @@ from rest_framework.validators import UniqueTogetherValidator, UniqueValidator
 from nautobot.core.api import (
     ChoiceField,
     ContentTypeField,
+    NautobotHyperlinkedRelatedField,
     NautobotModelSerializer,
     TimeZoneSerializerField,
     TreeModelSerializerMixin,
@@ -81,6 +82,7 @@ from nautobot.dcim.models import (
     DeviceTypeToSoftwareImageFile,
     FrontPort,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceRedundancyGroupAssociation,
@@ -558,6 +560,12 @@ class DeviceBaySerializer(TaggedModelSerializerMixin, NautobotModelSerializer):
 class DeviceSerializer(TaggedModelSerializerMixin, NautobotModelSerializer):
     face = ChoiceField(choices=DeviceFaceChoices, allow_blank=True, required=False)
     config_context = serializers.SerializerMethodField()
+    hardware_assets = NautobotHyperlinkedRelatedField(
+        many=True,
+        read_only=True,
+        view_name="dcim-api:hardwareasset-detail",
+        help_text="Hardware assets associated with this device (staged or installed)",
+    )
 
     class Meta:
         model = Device
@@ -1522,6 +1530,28 @@ class InterfaceVDCAssignmentSerializer(ValidatedModelSerializer):
     class Meta:
         model = InterfaceVDCAssignment
         fields = "__all__"
+
+
+class HardwareAssetSerializer(TaggedModelSerializerMixin, NautobotModelSerializer):
+    is_installed = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = HardwareAsset
+        fields = "__all__"
+
+        # serial and asset_tag are nullable; suppress DRF's auto-generated validators and
+        # re-apply them only when a real value is provided (same approach as ModuleSerializer).
+        validators = []
+
+    def validate(self, attrs):
+        """Validate serial and asset_tag uniqueness constraints for hardware asset."""
+        if attrs.get("serial"):
+            validator = UniqueTogetherValidator(queryset=HardwareAsset.objects.all(), fields=("device_type", "serial"))
+            validator(attrs, self)
+        if attrs.get("asset_tag"):
+            validator = UniqueValidator(queryset=HardwareAsset.objects.all())
+            validator(attrs["asset_tag"], self.fields["asset_tag"])
+        return super().validate(attrs)
 
 
 class ModuleFamilySerializer(NautobotModelSerializer):

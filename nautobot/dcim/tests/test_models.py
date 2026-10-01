@@ -7,7 +7,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.cache import caches
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
-from django.db.models import Model
+from django.db.models import Model, ProtectedError
 from django.test import TestCase
 from django.test.utils import override_settings
 
@@ -56,6 +56,7 @@ from nautobot.dcim.models import (
     DeviceTypeToSoftwareImageFile,
     FrontPort,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceTemplate,
@@ -2240,8 +2241,8 @@ class DeviceTestCase(ModelTestCases.BaseModelTestCase):
         self.assertEqual(child_mtime_before_parent_saved, child_mtime_after_parent_noop_save)
 
         #
-        # On a serial number update, the child device shouldn't be updated
-        parent_device.serial = "12345"
+        # On a non-placement field update, the child device shouldn't be updated
+        parent_device.comments = "updated"
         parent_device.save()
 
         child_mtime_after_parent_serial_update_save = Device.objects.get(name="Child Device 1").last_updated
@@ -2351,8 +2352,8 @@ class DeviceTestCase(ModelTestCases.BaseModelTestCase):
         self.assertEqual(child_mtime_before_parent_saved, child_mtime_after_parent_noop_save)
 
         #
-        # On a serial number update, the child devices shouldn't be updated
-        parent_device.serial = "12345"
+        # On a non-placement field update, the child devices shouldn't be updated
+        parent_device.comments = "updated"
         parent_device.save()
 
         parent_child_mtime_after_parent_serial_update_save = Device.objects.get(
@@ -6425,3 +6426,186 @@ class DeviceClusterAssignmentTestCase(ModelTestCases.BaseModelTestCase):
         self.assertEqual(device.clusters.first(), self.clusters[1])
         device.cluster = None
         self.assertEqual(device.clusters.count(), 0)
+
+
+class HardwareAssetTestCase(ModelTestCases.BaseModelTestCase):
+    model = HardwareAsset
+
+    @classmethod
+    def setUpTestData(cls):
+        manufacturer = Manufacturer.objects.first()
+        cls.device_type_a = DeviceType.objects.create(manufacturer=manufacturer, model="HWA model A")
+        cls.device_type_b = DeviceType.objects.create(manufacturer=manufacturer, model="HWA model B")
+        location_type = LocationType.objects.create(name="HWA Location Type")
+        location_type.content_types.set(
+            [ContentType.objects.get_for_model(Device), ContentType.objects.get_for_model(HardwareAsset)]
+        )
+        location_status = Status.objects.get_for_model(Location).first()
+        cls.site = Location.objects.create(name="HWA Site", location_type=location_type, status=location_status)
+        cls.depot = Location.objects.create(name="HWA Depot", location_type=location_type, status=location_status)
+        cls.asset_status = Status.objects.get_for_model(HardwareAsset).first()
+        cls.device = Device.objects.create(
+            name="hwa-test-device",
+            device_type=cls.device_type_a,
+            role=Role.objects.get_for_model(Device).first(),
+            status=Status.objects.get_for_model(Device).first(),
+            location=cls.site,
+        )
+
+    def _make_asset(self, device_type=None, serial=None, asset_tag=None, device=None, location=None):
+        return HardwareAsset.objects.create(
+            device_type=device_type or self.device_type_a,
+            status=self.asset_status,
+            serial=serial,
+            asset_tag=asset_tag,
+            device=device,
+            location=location,
+        )
+
+    def test_mirrors_follow_install_cutover_and_uninstall(self):
+        device = Device.objects.get(pk=self.device.pk)
+        self.assertEqual(device.serial, "")
+        self.assertIsNone(device.asset_tag)
+
+        asset_a = self._make_asset(serial="SN-A", asset_tag="HWA-TAG-A", device=device, location=self.depot)
+        device.installed_asset = asset_a
+        device.validated_save()
+        device.refresh_from_db()
+        asset_a.refresh_from_db()
+        self.assertEqual(device.serial, "SN-A")
+        self.assertEqual(device.asset_tag, "HWA-TAG-A")
+        # The staged depot location clears at install; physical location now derives from the device.
+        self.assertIsNone(asset_a.location)
+        self.assertEqual(asset_a.physical_location, device.location)
+
+        asset_b = self._make_asset(serial="SN-B", device=device)
+        device.installed_asset = asset_b
+        device.validated_save()
+        device.refresh_from_db()
+        self.assertEqual(device.serial, "SN-B")
+        self.assertIsNone(device.asset_tag)
+
+        device.installed_asset = None
+        device.validated_save()
+        device.refresh_from_db()
+        self.assertEqual(device.serial, "")
+        self.assertIsNone(device.asset_tag)
+        # Both assets remain associated to the device with their history intact.
+        self.assertQuerySetEqual(device.hardware_assets.all(), [asset_a, asset_b], ordered=False)
+
+    def test_direct_identity_writes_rejected_without_asset(self):
+        device = Device.objects.get(pk=self.device.pk)
+        device.serial = "DIRECT"
+        with self.assertRaises(ValidationError) as cm:
+            device.validated_save()
+        self.assertIn("serial", cm.exception.message_dict)
+
+        device.refresh_from_db()
+        device.asset_tag = "DIRECT-TAG"
+        with self.assertRaises(ValidationError) as cm:
+            device.validated_save()
+        self.assertIn("asset_tag", cm.exception.message_dict)
+
+        new_device = Device(
+            name="hwa-new-device",
+            device_type=self.device_type_a,
+            role=Role.objects.get_for_model(Device).first(),
+            status=Status.objects.get_for_model(Device).first(),
+            location=self.site,
+            serial="NEW",
+        )
+        with self.assertRaises(ValidationError) as cm:
+            new_device.validated_save()
+        self.assertIn("serial", cm.exception.message_dict)
+
+    def test_direct_identity_writes_rejected_while_installed(self):
+        device = Device.objects.get(pk=self.device.pk)
+        asset = self._make_asset(serial="SN-1", device=device)
+        device.installed_asset = asset
+        device.validated_save()
+
+        device.refresh_from_db()
+        device.serial = "SOMETHING"
+        with self.assertRaises(ValidationError) as cm:
+            device.validated_save()
+        self.assertIn("serial", cm.exception.message_dict)
+
+        device.refresh_from_db()
+        device.device_type = self.device_type_b
+        with self.assertRaises(ValidationError) as cm:
+            device.validated_save()
+        self.assertIn("device_type", cm.exception.message_dict)
+
+    def test_cutover_syncs_device_type(self):
+        device = Device.objects.get(pk=self.device.pk)
+        asset_a = self._make_asset(serial="SN-A2", device=device)
+        device.installed_asset = asset_a
+        device.validated_save()
+
+        # A staged asset may be a different hardware model; the cutover syncs the device's type.
+        asset_b = self._make_asset(device_type=self.device_type_b, serial="SN-B2", device=device)
+        device.refresh_from_db()
+        device.installed_asset = asset_b
+        device.validated_save()
+        device.refresh_from_db()
+        self.assertEqual(device.device_type, self.device_type_b)
+
+    def test_installed_asset_edits_push_to_device(self):
+        device = Device.objects.get(pk=self.device.pk)
+        asset = self._make_asset(serial="SN-OLD", device=device)
+        device.installed_asset = asset
+        device.validated_save()
+
+        asset.refresh_from_db()
+        asset.serial = "SN-NEW"
+        asset.asset_tag = "HWA-TAG-NEW"
+        asset.validated_save()
+        device.refresh_from_db()
+        self.assertEqual(device.serial, "SN-NEW")
+        self.assertEqual(device.asset_tag, "HWA-TAG-NEW")
+
+        asset.device_type = self.device_type_b
+        asset.validated_save()
+        device.refresh_from_db()
+        self.assertEqual(device.device_type, self.device_type_b)
+
+    def test_installed_asset_must_be_associated(self):
+        device = Device.objects.get(pk=self.device.pk)
+        unassociated = self._make_asset(serial="SN-U")
+        device.installed_asset = unassociated
+        with self.assertRaises(ValidationError) as cm:
+            device.validated_save()
+        self.assertIn("installed_asset", cm.exception.message_dict)
+
+    def test_installed_asset_unlink_and_location_rules(self):
+        device = Device.objects.get(pk=self.device.pk)
+        asset = self._make_asset(serial="SN-L", device=device)
+        device.installed_asset = asset
+        device.validated_save()
+
+        asset = HardwareAsset.objects.get(pk=asset.pk)
+        asset.device = None
+        with self.assertRaises(ValidationError) as cm:
+            asset.validated_save()
+        self.assertIn("device", cm.exception.message_dict)
+
+        asset = HardwareAsset.objects.get(pk=asset.pk)
+        asset.location = self.depot
+        with self.assertRaises(ValidationError) as cm:
+            asset.validated_save()
+        self.assertIn("location", cm.exception.message_dict)
+
+    def test_delete_protected_while_installed(self):
+        device = Device.objects.get(pk=self.device.pk)
+        asset = self._make_asset(serial="SN-P", device=device)
+        device.installed_asset = asset
+        device.validated_save()
+        with self.assertRaises(ProtectedError):
+            asset.delete()
+
+    def test_bare_save_rederives_mirrors(self):
+        device = Device.objects.get(pk=self.device.pk)
+        device.serial = "RAW"
+        device.save()
+        device.refresh_from_db()
+        self.assertEqual(device.serial, "")

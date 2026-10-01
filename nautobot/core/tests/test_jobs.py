@@ -416,11 +416,13 @@ class ImportObjectsTestCase(TransactionTestCase):
         )
         role = Role.objects.create(name="Device Status")
         role.content_types.set([ContentType.objects.get_for_model(Device)])
+        # serial and asset_tag are read-only mirrors of the installed hardware asset and may not be
+        # imported directly on a Device.
         content = "\n".join(
             [
-                "serial,asset_tag,device_type,location,status,name,role",
-                f"1021C4,CA211,{device_type.pk},{location.pk},{status},Test-AC-01,{role}",
-                f"1021C5,CA212,{device_type.pk},{location.pk},{status},Test-AC-02,{role}",
+                "device_type,location,status,name,role",
+                f"{device_type.pk},{location.pk},{status},Test-AC-01,{role}",
+                f"{device_type.pk},{location.pk},{status},Test-AC-02,{role}",
             ]
         )
         content = content.encode("utf-8-sig")
@@ -441,8 +443,8 @@ class ImportObjectsTestCase(TransactionTestCase):
         )
         device_1 = Device.objects.get(name="Test-AC-01")
         device_2 = Device.objects.get(name="Test-AC-02")
-        self.assertEqual(device_1.serial, "1021C4")
-        self.assertEqual(device_2.serial, "1021C5")
+        self.assertEqual(device_1.serial, "")
+        self.assertEqual(device_2.serial, "")
 
     def test_csv_import_bad_row(self):
         """A row of incorrect data should fail validation for that object but import all others successfully if `roll_back_if_error` is False."""

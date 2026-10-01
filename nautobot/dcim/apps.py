@@ -14,6 +14,7 @@ class DCIMConfig(NautobotConfig):
         "devicefamily",
         "deviceredundancygroup",
         "devicetype",
+        "hardwareasset",
         "location",
         "module",
         "modulefamily",

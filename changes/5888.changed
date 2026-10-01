@@ -1,0 +1,3 @@
+Changed `Device.serial` and `Device.asset_tag` to read-only mirrors of the installed hardware asset; direct writes to these fields are now rejected, and a device with no installed asset has empty values.
+Changed `Device.device_type` to be owned by the installed hardware asset: it is read-only while an asset is installed, and cutting over to an asset of a different type now updates the device's type automatically.
+Removed the uniqueness constraint from `Device.asset_tag`; asset tag uniqueness is now enforced on `HardwareAsset.asset_tag`, which the device column mirrors.

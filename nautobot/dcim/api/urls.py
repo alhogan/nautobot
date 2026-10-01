@@ -35,6 +35,7 @@ router.register("module-bay-templates", views.ModuleBayTemplateViewSet)
 router.register("platforms", views.PlatformViewSet)
 router.register("devices", views.DeviceViewSet)
 router.register("modules", views.ModuleViewSet)
+router.register("hardware-assets", views.HardwareAssetViewSet)
 
 # Device components
 router.register("console-ports", views.ConsolePortViewSet)

@@ -15,7 +15,7 @@ from django.urls import reverse
 from rest_framework import status
 
 from nautobot.core.testing import APITestCase, APIViewTestCases, AssertNoRepeatedQueries, disable_warnings
-from nautobot.core.testing.utils import generate_random_device_asset_tag_of_specified_size, get_deletable_objects
+from nautobot.core.testing.utils import get_deletable_objects
 from nautobot.dcim.choices import (
     ConsolePortTypeChoices,
     DeviceUniquenessChoices,
@@ -53,6 +53,7 @@ from nautobot.dcim.models import (
     DeviceTypeToSoftwareImageFile,
     FrontPort,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceTemplate,
@@ -1902,7 +1903,6 @@ class DeviceTest(APIViewTestCases.APIViewTestCase):
             {
                 "device_type": device_type.pk,
                 "role": device_role.pk,
-                "asset_tag": generate_random_device_asset_tag_of_specified_size(100),
                 "status": device_statuses[1].pk,
                 "name": "Test Device 4",
                 "location": locations[1].pk,
@@ -1915,7 +1915,6 @@ class DeviceTest(APIViewTestCases.APIViewTestCase):
                 "device_type": device_type.pk,
                 "role": device_role.pk,
                 "status": device_statuses[1].pk,
-                "asset_tag": generate_random_device_asset_tag_of_specified_size(100),
                 "name": "Test Device 5",
                 "location": locations[1].pk,
                 "rack": racks[1].pk,
@@ -1927,7 +1926,6 @@ class DeviceTest(APIViewTestCases.APIViewTestCase):
                 "device_type": device_type.pk,
                 "role": device_role.pk,
                 "status": device_statuses[1].pk,
-                "asset_tag": generate_random_device_asset_tag_of_specified_size(100),
                 "name": "Test Device 6",
                 "location": locations[1].pk,
                 "rack": racks[1].pk,
@@ -5377,3 +5375,42 @@ class DeviceClusterAssignmentTestCase(APIViewTestCases.APIViewTestCase):
                 "cluster": clusters[0].pk,
             },
         ]
+
+
+class HardwareAssetTestCase(APIViewTestCases.APIViewTestCase):
+    model = HardwareAsset
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.device_type = DeviceType.objects.first()
+        cls.status = Status.objects.get_for_model(HardwareAsset).first()
+        cls.location = Location.objects.get_for_model(HardwareAsset).first()
+        cls.create_data = [
+            {
+                "device_type": cls.device_type.pk,
+                "status": cls.status.pk,
+                "serial": "api test serial 1",
+                "asset_tag": "api test asset tag 1",
+            },
+            {
+                "device_type": cls.device_type.pk,
+                "status": cls.status.pk,
+                "location": cls.location.pk,
+            },
+            {
+                "device_type": cls.device_type.pk,
+                "status": cls.status.pk,
+                "serial": "api test serial 3",
+            },
+        ]
+        cls.bulk_update_data = {
+            "tenant": Tenant.objects.first().pk,
+        }
+        cls.update_data = {
+            "serial": "api new serial 789",
+            "asset_tag": "api new asset tag 789",
+        }
+
+    def get_deletable_object_pks(self):
+        # An installed asset is delete-protected by the device's installed_asset pointer.
+        return HardwareAsset.objects.filter(installed_in__isnull=True).values_list("pk", flat=True)[:3]

@@ -94,7 +94,6 @@ class DynamicGroupTestBase(TestCase):
                 status=cls.status_1,
                 role=cls.device_role,
                 device_type=cls.device_type,
-                serial="abc123",
                 location=cls.locations[1],
             ),
             Device.objects.create(

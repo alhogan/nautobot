@@ -139,6 +139,7 @@ from .models import (
     DeviceType,
     FrontPort,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceRedundancyGroupAssociation,
@@ -3407,6 +3408,15 @@ class DeviceUIViewSet(NautobotUIViewSet):
                 section=SectionChoices.FULL_WIDTH,
                 table_title="Virtual Device Contexts",
                 table_class=tables.VirtualDeviceContextTable,
+                table_filter="device",
+                exclude_columns=["device"],
+                show_table_config_button=False,
+            ),
+            object_detail.ObjectsTablePanel(
+                weight=110,
+                section=SectionChoices.FULL_WIDTH,
+                table_title="Hardware Assets",
+                table_class=tables.HardwareAssetTable,
                 table_filter="device",
                 exclude_columns=["device"],
                 show_table_config_button=False,
@@ -7064,6 +7074,32 @@ class VirtualDeviceContextUIViewSet(NautobotUIViewSet):
                 table_attribute="vrfs",
                 related_field_name="virtual_device_contexts",
                 section=SectionChoices.FULL_WIDTH,
+            ),
+        ),
+    )
+
+
+#
+# Hardware Assets
+#
+
+
+class HardwareAssetUIViewSet(NautobotUIViewSet):
+    filterset_class = filters.HardwareAssetFilterSet
+    filterset_form_class = forms.HardwareAssetFilterForm
+    form_class = forms.HardwareAssetForm
+    bulk_update_form_class = forms.HardwareAssetBulkEditForm
+    queryset = HardwareAsset.objects.select_related(
+        "device_type__manufacturer", "device", "installed_in__location", "location", "tenant"
+    )
+    serializer_class = serializers.HardwareAssetSerializer
+    table_class = tables.HardwareAssetTable
+    object_detail_content = object_detail.ObjectDetailContent(
+        panels=(
+            object_detail.ObjectFieldsPanel(
+                section=SectionChoices.LEFT_HALF,
+                weight=100,
+                fields="__all__",
             ),
         ),
     )

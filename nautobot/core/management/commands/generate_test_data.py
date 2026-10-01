@@ -58,8 +58,17 @@ class Command(BaseCommand):
             default=DEFAULT_DB_ALIAS,
             help='The database to generate the test data in. Defaults to the "default" database.',
         )
+        parser.add_argument(
+            "--sparse",
+            action="store_true",
+            help=(
+                "Randomize optional identity fields (serial, asset tag, tenant, etc.) instead of fully populating "
+                "them. Used by the automated test runner so both populated and empty cases are exercised; "
+                "the default (fully populated) is intended for demo/development data."
+            ),
+        )
 
-    def _generate_factory_data(self, seed, db_name, print_hashes=False):
+    def _generate_factory_data(self, seed, db_name, print_hashes=False, sparse=False):
         try:
             import factory.random
 
@@ -88,6 +97,7 @@ class Command(BaseCommand):
                 DeviceRedundancyGroupFactory,
                 DeviceTypeFactory,
                 FrontPortTemplateFactory,
+                HardwareAssetFactory,
                 InterfaceTemplateFactory,
                 LocationFactory,
                 LocationTypeFactory,
@@ -274,7 +284,10 @@ class Command(BaseCommand):
         _create_batch(ExternalIntegrationFactory, 20)
         _create_batch(SoftwareImageFileFactory, 25, description="to be usable by DeviceTypes")
         _create_batch(ManufacturerFactory, 4, description="without Platforms")  # 4 more hard-coded Manufacturers
-        _create_batch(DeviceTypeFactory, 30)
+        if sparse:
+            _create_batch(DeviceTypeFactory, 30)
+        else:
+            _create_batch(DeviceTypeFactory, 30, description="fully populated", has_part_number=True)
         _create_batch(ModuleTypeFactory, 20)
         _create_batch(ConsolePortTemplateFactory, 30)
         _create_batch(ConsoleServerPortTemplateFactory, 30)
@@ -287,9 +300,33 @@ class Command(BaseCommand):
         _create_batch(ModuleBayTemplateFactory, 30, description="with module families", has_module_family=True)
         _create_batch(ManufacturerFactory, 2, description="without Platforms or DeviceTypes")  # Last 2 hard-coded
         _create_batch(DeviceRedundancyGroupFactory, 20)
-        _create_batch(DeviceFactory, 20)
-        _create_batch(VirtualDeviceContextFactory, 30)
-        _create_batch(ModuleFactory, 20)
+        # In the default (non-sparse) mode, fully populate identity-adjacent optional fields so generated
+        # data reads as complete in the UI. The test runner passes --sparse to keep randomizing these,
+        # which both exercises the empty cases and keeps the seeded random sequence unchanged for tests.
+        if sparse:
+            _create_batch(DeviceFactory, 20)
+            _create_batch(VirtualDeviceContextFactory, 30)
+            _create_batch(ModuleFactory, 20)
+        else:
+            # serial and asset_tag are read-only mirrors of the installed hardware asset, so the Device
+            # factory no longer populates them; the HardwareAssetFactory batch at the end of this
+            # sequence installs assets, which fills the mirrors on those devices.
+            _create_batch(
+                DeviceFactory,
+                20,
+                description="fully populated",
+                has_tenant=True,
+                has_platform=True,
+            )
+            _create_batch(VirtualDeviceContextFactory, 30, description="fully populated", has_tenant=True)
+            _create_batch(
+                ModuleFactory,
+                20,
+                description="fully populated",
+                has_serial=True,
+                has_asset_tag=True,
+                has_tenant=True,
+            )
         _create_batch(SoftwareVersionFactory, 5, description="without Devices")
         _create_batch(SoftwareImageFileFactory, 5, description="without DeviceTypes")
         _create_batch(CloudAccountFactory, 10)
@@ -432,6 +469,10 @@ class Command(BaseCommand):
             has_contact=False,
             description="with teams",
         )
+        # Deliberately last: adding a factory batch mid-sequence shifts the seeded random stream for every
+        # batch after it, which can perturb long-standing generated data that tests implicitly depend on.
+        # At the end of the sequence there is nothing downstream to disturb.
+        _create_batch(HardwareAssetFactory, 40)
 
     def handle(self, *args, **options):
         if options["flush"]:
@@ -467,7 +508,9 @@ Type 'yes' to continue, or 'no' to cancel: """
             print_hashes = options["print_hashes"]
             if is_truthy(os.environ.get("GITHUB_ACTIONS", "false")):
                 print_hashes = True
-            self._generate_factory_data(options["seed"], options["database"], print_hashes=print_hashes)
+            self._generate_factory_data(
+                options["seed"], options["database"], print_hashes=print_hashes, sparse=options["sparse"]
+            )
 
             if options["cache_test_fixtures"]:
                 self.stdout.write(self.style.WARNING(f"Saving factory data to file {options['fixture_file']}"))

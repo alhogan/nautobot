@@ -8,7 +8,10 @@ A device is said to be full-depth if its installation on one rack face prevents 
 
 Each device must be instantiated from a pre-created device type, and its default components ([console ports](consoleport.md), [power ports](powerport.md), [interfaces](interface.md), etc.) will be created automatically. (The device type associated with a device may be changed after its creation, however its components will not be updated retroactively.)
 
-Each device must be assigned a [location](location.md), device [role](../../platform-functionality/role.md), and operational [`status`](../../platform-functionality/status.md), and may optionally be assigned to a rack within a location. A platform, serial number, and asset tag may optionally be assigned to each device.
+Each device must be assigned a [location](location.md), device [role](../../platform-functionality/role.md), and operational [`status`](../../platform-functionality/status.md), and may optionally be assigned to a rack within a location. A platform may optionally be assigned to each device.
+
++/- 4.0.0
+    A device's `serial` and `asset_tag` fields are read-only mirrors of its installed [hardware asset](hardwareasset.md), and `device_type` is likewise owned by the installed asset while one is installed. To record a serial number or asset tag, create a hardware asset and install it on the device; a device with no installed asset has an empty serial and asset tag and a freely editable device type.
 
 Device names must be unique within a location, unless the device has been assigned to a tenant. Devices may also be unnamed.
 

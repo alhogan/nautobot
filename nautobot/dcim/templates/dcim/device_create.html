@@ -54,6 +54,14 @@
             {% render_field form.device_type %}
             {% render_field form.serial %}
             {% render_field form.asset_tag %}
+            {% if editing %}
+                {% render_field form.installed_asset %}
+            {% else %}
+                <div class="alert alert-info" role="alert">
+                    A hardware asset can be designated as installed after creating this device
+                    and associating a hardware asset to it.
+                </div>
+            {% endif %}
         </div>
     </div>
     <div class="card">

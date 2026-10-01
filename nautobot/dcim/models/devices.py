@@ -60,6 +60,7 @@ __all__ = (
     "DeviceFamily",
     "DeviceRedundancyGroup",
     "DeviceType",
+    "HardwareAsset",
     "InterfaceVDCAssignment",
     "Manufacturer",
     "Platform",
@@ -533,14 +534,20 @@ class Device(PrimaryModel, ConfigContextModel):
     _name = NaturalOrderingField(
         target_field="name", max_length=CHARFIELD_MAX_LENGTH, blank=True, null=True, db_index=True
     )
-    serial = models.CharField(max_length=CHARFIELD_MAX_LENGTH, blank=True, verbose_name="Serial number", db_index=True)
-    asset_tag = models.CharField(
+    serial = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        blank=True,
+        verbose_name="Serial number",
+        db_index=True,
+        help_text="Read-only mirror of the installed hardware asset's serial number",
+    )
+    asset_tag = models.CharField(  # noqa: DJ001  # django-nullable-model-string-field -- mirrors nullable HardwareAsset.asset_tag
         max_length=CHARFIELD_MAX_LENGTH,
         blank=True,
         null=True,
-        unique=True,
+        db_index=True,
         verbose_name="Asset tag",
-        help_text="A unique tag used to identify this device",
+        help_text="Read-only mirror of the installed hardware asset's asset tag",
     )
     location = models.ForeignKey(
         to="dcim.Location",
@@ -677,6 +684,15 @@ class Device(PrimaryModel, ConfigContextModel):
         blank=True,
         null=True,
     )
+    installed_asset = models.OneToOneField(
+        to="dcim.HardwareAsset",
+        on_delete=models.PROTECT,
+        related_name="installed_in",
+        blank=True,
+        null=True,
+        verbose_name="Installed hardware asset",
+        help_text="The hardware asset currently serving as this device; must be one of this device's associated assets",
+    )
 
     objects = BaseManager.from_queryset(DeviceQuerySet)()
 
@@ -734,6 +750,11 @@ class Device(PrimaryModel, ConfigContextModel):
         from nautobot.ipam import models as ipam_models  # circular import workaround
 
         super().clean()
+
+        # The installed hardware asset is authoritative for serial, asset_tag, and device_type.
+        # Runs before the placement validations below so that a cutover to an asset of a different
+        # device type is validated (rack fit, platform) against the incoming asset's type.
+        self._clean_hardware_asset_authority()
 
         # Validate location
         if self.location is not None:
@@ -914,6 +935,79 @@ class Device(PrimaryModel, ConfigContextModel):
                     }
                 )
 
+    def _apply_hardware_asset_mirrors(self):
+        """
+        Derive the hardware identity mirror columns from the installed asset.
+
+        The installed asset is authoritative for `serial`, `asset_tag`, and `device_type`. A device with
+        no installed asset has empty identity mirrors and keeps `device_type` as freely editable design
+        intent.
+        """
+        if self.installed_asset is not None:
+            self.serial = self.installed_asset.serial or ""
+            self.asset_tag = self.installed_asset.asset_tag
+            self.device_type = self.installed_asset.device_type
+        else:
+            self.serial = ""
+            self.asset_tag = None
+
+    def _clean_hardware_asset_authority(self):
+        """
+        Enforce installed-asset authority over the identity mirror columns.
+
+        On an install, uninstall, or cutover (the `installed_asset` pointer differs from the database),
+        the mirrors are derived from the incoming asset so subsequent validations see the authoritative
+        values. Otherwise, direct changes to the mirror columns are rejected: `serial`, `asset_tag`, and
+        (while an asset is installed) `device_type` can only change through a hardware asset.
+        """
+        if self.installed_asset is not None and self.installed_asset.device_id != self.pk:
+            raise ValidationError({"installed_asset": "The installed asset must first be associated to this device."})
+
+        db_identity = (
+            Device.objects.filter(pk=self.pk)
+            .values("installed_asset_id", "serial", "asset_tag", "device_type_id")
+            .first()
+            if self.present_in_database
+            else None
+        )
+        db_pointer = db_identity["installed_asset_id"] if db_identity else None
+
+        if self.installed_asset_id != db_pointer:
+            # Install, uninstall, or cutover: the incoming asset (or its absence) defines the mirrors.
+            # Any mirror values submitted alongside the pointer change are overwritten, not rejected.
+            self._apply_hardware_asset_mirrors()
+            return
+
+        if self.installed_asset_id is not None:
+            errors = {}
+            if self.serial != db_identity["serial"]:
+                errors["serial"] = "Serial number is owned by the installed hardware asset; edit the asset instead."
+            if self.asset_tag != db_identity["asset_tag"]:
+                errors["asset_tag"] = "Asset tag is owned by the installed hardware asset; edit the asset instead."
+            if self.device_type_id != db_identity["device_type_id"]:
+                errors["device_type"] = (
+                    "Device type is owned by the installed hardware asset; it can only change by cutting "
+                    "over to an asset of the new type."
+                )
+            if errors:
+                raise ValidationError(errors)
+            # The mirrors self-heal on every validated save in case the columns drifted via raw writes.
+            self._apply_hardware_asset_mirrors()
+        else:
+            errors = {}
+            if self.serial != (db_identity["serial"] if db_identity else ""):
+                errors["serial"] = (
+                    "Serial number is derived from the installed hardware asset; "
+                    "create a hardware asset and install it instead."
+                )
+            if self.asset_tag != (db_identity["asset_tag"] if db_identity else None):
+                errors["asset_tag"] = (
+                    "Asset tag is derived from the installed hardware asset; "
+                    "create a hardware asset and install it instead."
+                )
+            if errors:
+                raise ValidationError(errors)
+
     def save(self, *args, **kwargs):
         is_new = not self.present_in_database
 
@@ -921,6 +1015,10 @@ class Device(PrimaryModel, ConfigContextModel):
         from nautobot.dcim.custom_validators import DeviceUniquenessValidator
 
         DeviceUniquenessValidator(self).clean()
+
+        # The identity mirror columns are pure derived state; recompute them on every save so that
+        # they hold the installed asset's values (or are empty) regardless of how the caller set them.
+        self._apply_hardware_asset_mirrors()
 
         super().save(*args, **kwargs)
 
@@ -934,6 +1032,12 @@ class Device(PrimaryModel, ConfigContextModel):
         # unless an app has opted out via nautobot.apps.dcim.SkipAutoComponentCreation.
         if is_new and not is_auto_component_creation_suppressed():
             self.create_components()
+
+        # An installed asset derives its physical location from this device; clear any standalone location
+        # it carried while staged (e.g. a depot) now that it is installed.
+        if self.installed_asset is not None and self.installed_asset.location_id is not None:
+            self.installed_asset.location = None
+            self.installed_asset.save()
 
         # Update Location and Rack assignment for all nested descendant Devices.
         # We recurse from direct children only using get_children(), and not all_nested_devices,
@@ -2376,3 +2480,173 @@ class InterfaceVDCAssignment(BaseModel):
 
     def __str__(self):
         return f"{self.virtual_device_context}: {self.interface}"
+
+
+#
+# Hardware Assets
+#
+
+
+@extras_features(
+    "custom_links",
+    "custom_validators",
+    "export_templates",
+    "graphql",
+    "locations",
+    "statuses",
+    "webhooks",
+)
+class HardwareAsset(PrimaryModel):
+    """
+    A HardwareAsset represents a physical, serialized piece of whole-device hardware,
+    tracked independently of any logical Device.
+
+    A HardwareAsset may exist unassociated (e.g. a spare in a depot), be associated to a Device ahead of
+    installation (staged), or be the hardware backing a Device. The installed designation is the
+    `Device.installed_asset` pointer, not this model's status; at most one of a Device's associated assets
+    is installed at any time.
+    """
+
+    device_type = models.ForeignKey(to="dcim.DeviceType", on_delete=models.PROTECT, related_name="hardware_assets")
+    status = StatusField(blank=False, null=False)
+    serial = models.CharField(  # noqa: DJ001  # django-nullable-model-string-field -- intentional, see save()
+        max_length=CHARFIELD_MAX_LENGTH,
+        blank=True,
+        null=True,
+        verbose_name="Serial number",
+        db_index=True,
+    )
+    asset_tag = models.CharField(
+        max_length=CHARFIELD_MAX_LENGTH,
+        blank=True,
+        null=True,
+        unique=True,
+        verbose_name="Asset tag",
+        help_text="A unique tag used to identify this hardware asset",
+    )
+    device = models.ForeignKey(
+        to="dcim.Device",
+        on_delete=models.SET_NULL,
+        related_name="hardware_assets",
+        blank=True,
+        null=True,
+        help_text="Logical device this asset is associated with (staged or installed)",
+    )
+    location = models.ForeignKey(
+        to="dcim.Location",
+        on_delete=models.PROTECT,
+        related_name="hardware_assets",
+        blank=True,
+        null=True,
+        help_text="Physical location of the asset while not installed (e.g. a depot or warehouse)",
+    )
+    tenant = models.ForeignKey(
+        to="tenancy.Tenant",
+        on_delete=models.PROTECT,
+        related_name="hardware_assets",
+        blank=True,
+        null=True,
+    )
+    comments = models.TextField(blank=True)
+    images = GenericRelation(to="extras.ImageAttachment")
+
+    clone_fields = [
+        "device_type",
+        "status",
+        "location",
+        "tenant",
+    ]
+
+    # serial and asset_tag are both nullable, so there is no reliable natural key (Module precedent)
+    natural_key_field_names = ["pk"]
+
+    class Meta:
+        ordering = ("device_type", "serial", "asset_tag")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["device_type", "serial"],
+                name="dcim_hardwareasset_device_type_serial_unique",
+            ),
+        ]
+
+    def __str__(self):
+        serial = f" (Serial: {self.serial})" if self.serial else ""
+        asset_tag = f" (Asset Tag: {self.asset_tag})" if self.asset_tag else ""
+        return str(self.device_type) + serial + asset_tag
+
+    @property
+    def manufacturer(self):
+        return self.device_type.manufacturer
+
+    @property
+    def is_installed(self):
+        """True if this asset is designated as some Device's installed asset."""
+        return getattr(self, "installed_in", None) is not None
+
+    @property
+    def physical_location(self):
+        """The device's location while installed; this asset's own location otherwise."""
+        if self.is_installed:
+            return self.installed_in.location
+        return self.location
+
+    def clean(self):
+        super().clean()
+
+        if self.location is not None:
+            if ContentType.objects.get_for_model(self) not in self.location.location_type.content_types.all():
+                raise ValidationError(
+                    {
+                        "location": (
+                            f'Hardware assets may not associate to locations of type "{self.location.location_type}".'
+                        )
+                    }
+                )
+
+        # Query the database rather than the reverse-relation cache: assigning Device.installed_asset in memory
+        # populates this asset's cached "installed_in" even if that assignment is never saved.
+        installed_in = Device.objects.filter(installed_asset=self.pk).first() if self.present_in_database else None
+        if installed_in is not None:
+            # The association of an installed asset may only be broken through the device's pointer,
+            # so the two pointers stay consistent by construction.
+            if self.device_id != installed_in.pk:
+                raise ValidationError(
+                    {
+                        "device": (
+                            f"This asset is the installed asset for device {installed_in}; it must remain associated "
+                            "to that device until the device's installed asset designation is changed."
+                        )
+                    }
+                )
+            if self.location is not None:
+                raise ValidationError(
+                    {
+                        "location": (
+                            "An installed asset derives its physical location from its device; "
+                            "location must be null while installed."
+                        )
+                    }
+                )
+
+    def save(self, *args, **kwargs):
+        # Normalize empty strings to None so that the (device_type, serial) and asset_tag
+        # uniqueness constraints apply only to real values.
+        if self.serial == "":
+            self.serial = None
+        if self.asset_tag == "":
+            self.asset_tag = None
+        super().save(*args, **kwargs)
+
+        # This asset is authoritative for the installed device's identity mirror columns; push any
+        # changed values through. Query the database rather than the reverse-relation cache so a stale
+        # in-memory pointer cannot misdirect the sync. The device save re-derives its mirrors from this
+        # asset, records the change in the device's changelog, and syncs nothing further, so this cannot
+        # recurse.
+        device = Device.objects.filter(installed_asset=self.pk).first()
+        if device is not None and (
+            device.serial != (self.serial or "")
+            or device.asset_tag != self.asset_tag
+            or device.device_type_id != self.device_type_id
+        ):
+            device.installed_asset = self
+            device.save()

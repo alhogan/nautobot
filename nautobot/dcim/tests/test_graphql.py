@@ -22,6 +22,7 @@ from nautobot.dcim.models import (
     DeviceBayTemplate,
     DeviceType,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceTemplate,
     Location,
@@ -117,8 +118,15 @@ class GraphQLTestCase(TestCase):
             self.assertEqual(resp.data["devices"][0]["platform"]["network_driver_mappings"]["scrapli"], "cisco_iosxe")
 
         with self.subTest("device serial number query"):
+            # Device serial mirrors the installed hardware asset, so install one carrying the serial.
             non_empty_serial_device = Device.objects.first()
-            non_empty_serial_device.serial = "1234567890abceFGHIJKL"
+            non_empty_serial_hardware_asset = HardwareAsset.objects.create(
+                device_type=non_empty_serial_device.device_type,
+                status=Status.objects.get_for_model(HardwareAsset).first(),
+                serial="1234567890abceFGHIJKL",
+                device=non_empty_serial_device,
+            )
+            non_empty_serial_device.installed_asset = non_empty_serial_hardware_asset
             non_empty_serial_device.save()
 
             # Test device serial query default behavior: serial__ie

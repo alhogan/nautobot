@@ -83,6 +83,7 @@ from nautobot.dcim.models import (
     DeviceTypeToSoftwareImageFile,
     FrontPort,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceRedundancyGroupAssociation,
@@ -2500,8 +2501,6 @@ class DeviceTestCase(ViewTestCases.PrimaryObjectViewTestCase):
             "tenant": None,
             "platform": platforms[1].pk,
             "name": "Device X",
-            "serial": "VMWARE-XX XX XX XX XX XX XX XX-XX XX XX XX XX XX XX XX",
-            "asset_tag": generate_random_device_asset_tag_of_specified_size(100),
             "location": locations[1].pk,
             "rack": racks[1].pk,
             "position": 1,
@@ -2528,7 +2527,6 @@ class DeviceTestCase(ViewTestCases.PrimaryObjectViewTestCase):
             "role": deviceroles[1].pk,
             "tenant": None,
             "platform": platforms[1].pk,
-            "serial": "VMWARE-XX XX XX XX XX XX XX XX-XX XX XX XX XX XX XX XX",
             "status": statuses[2].pk,
             "location": locations[1].pk,
             "rack": racks[1].pk,
@@ -7163,3 +7161,29 @@ class ModuleFamilyTestCase(ViewTestCases.PrimaryObjectViewTestCase):
         cls.bulk_edit_data = {
             "description": "Modified description",
         }
+
+
+class HardwareAssetTestCase(ViewTestCases.PrimaryObjectViewTestCase):
+    model = HardwareAsset
+
+    @classmethod
+    def setUpTestData(cls):
+        device_type = DeviceType.objects.first()
+        statuses = Status.objects.get_for_model(HardwareAsset)
+        cls.form_data = {
+            "device_type": device_type.pk,
+            "status": statuses.first().pk,
+            "serial": "view test serial",
+            "asset_tag": "view test asset tag",
+            "comments": "A hardware asset created by the view tests",
+        }
+        cls.bulk_edit_data = {
+            "tenant": Tenant.objects.first().pk,
+        }
+
+    def get_deletable_object(self):
+        # An installed asset is delete-protected by the device's installed_asset pointer.
+        return HardwareAsset.objects.filter(installed_in__isnull=True).first()
+
+    def get_deletable_object_pks(self):
+        return HardwareAsset.objects.filter(installed_in__isnull=True).values_list("pk", flat=True)[:3]

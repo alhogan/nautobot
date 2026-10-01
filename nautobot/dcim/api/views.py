@@ -50,6 +50,7 @@ from nautobot.dcim.models import (
     DeviceTypeToSoftwareImageFile,
     FrontPort,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceRedundancyGroupAssociation,
@@ -429,7 +430,7 @@ class DeviceViewSet(ConfigContextQuerySetMixin, NautobotModelViewSet):
         "device_type__manufacturer",
         "virtual_chassis__master",
         "parent_bay",
-    ).prefetch_related("primary_ip4__nat_outside_list", "primary_ip6__nat_outside_list")
+    ).prefetch_related("primary_ip4__nat_outside_list", "primary_ip6__nat_outside_list", "hardware_assets")
     serializer_class = serializers.DeviceSerializer
     filterset_class = filters.DeviceFilterSet
 
@@ -977,6 +978,12 @@ class VirtualDeviceContextViewSet(NautobotModelViewSet):
     queryset = VirtualDeviceContext.objects.all()
     serializer_class = serializers.VirtualDeviceContextSerializer
     filterset_class = filters.VirtualDeviceContextFilterSet
+
+
+class HardwareAssetViewSet(NautobotModelViewSet):
+    queryset = HardwareAsset.objects.select_related("device_type__manufacturer", "device", "location", "tenant")
+    serializer_class = serializers.HardwareAssetSerializer
+    filterset_class = filters.HardwareAssetFilterSet
 
 
 class InterfaceVDCAssignmentViewSet(ModelViewSet):

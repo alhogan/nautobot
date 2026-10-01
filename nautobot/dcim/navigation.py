@@ -204,6 +204,22 @@ menu_items = (
                             ),
                         ),
                     ),
+                    NavMenuItem(
+                        link="dcim:hardwareasset_list",
+                        name="Hardware Assets",
+                        weight=800,
+                        permissions=[
+                            "dcim.view_hardwareasset",
+                        ],
+                        buttons=(
+                            NavMenuAddButton(
+                                link="dcim:hardwareasset_add",
+                                permissions=[
+                                    "dcim.add_hardwareasset",
+                                ],
+                            ),
+                        ),
+                    ),
                 ),
             ),
             NavMenuGroup(

@@ -32,6 +32,7 @@ from nautobot.core.jobs.customfields import (
     ProvisionCustomField,
     UpdateCustomFieldChoiceData,
 )
+from nautobot.core.jobs.dcim import CreateMissingHardwareAssets
 from nautobot.core.jobs.groups import RefreshDynamicGroupCacheJobButtonReceiver, RefreshDynamicGroupCaches
 from nautobot.core.utils.lookup import get_filterset_for_model
 from nautobot.core.utils.requests import get_filterable_params_from_filter_params
@@ -712,6 +713,7 @@ jobs = [
     BulkDeleteObjects,
     BulkEditObjects,
     CleanupCustomFieldsData,
+    CreateMissingHardwareAssets,
     DeleteCustomFieldData,
     ExportObjectList,
     GitRepositorySync,

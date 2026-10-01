@@ -53,6 +53,7 @@ from nautobot.dcim.filters import (
     DeviceTypeToSoftwareImageFileFilterSet,
     FrontPortFilterSet,
     FrontPortTemplateFilterSet,
+    HardwareAssetFilterSet,
     InterfaceConnectionFilterSet,
     InterfaceFilterSet,
     InterfaceRedundancyGroupAssociationFilterSet,
@@ -107,6 +108,7 @@ from nautobot.dcim.models import (
     DeviceTypeToSoftwareImageFile,
     FrontPort,
     FrontPortTemplate,
+    HardwareAsset,
     Interface,
     InterfaceRedundancyGroup,
     InterfaceRedundancyGroupAssociation,
@@ -661,9 +663,7 @@ def common_test_data(cls):
             tenant=tenants[0],
             status=device_statuses[0],
             cluster=clusters[0],
-            asset_tag="1001",
             face=DeviceFaceChoices.FACE_FRONT,
-            serial="ABC",
             position=1,
             secrets_group=secrets_groups[0],
             software_version=cls.software_versions[0],
@@ -678,9 +678,7 @@ def common_test_data(cls):
             tenant=tenants[1],
             status=device_statuses[1],
             cluster=clusters[1],
-            asset_tag="1002",
             face=DeviceFaceChoices.FACE_FRONT,
-            serial="DEF",
             position=2,
             secrets_group=secrets_groups[1],
             local_config_context_data={"foo": 123},
@@ -696,9 +694,7 @@ def common_test_data(cls):
             tenant=tenants[2],
             status=device_statuses[2],
             cluster=clusters[2],
-            asset_tag="1003",
             face=DeviceFaceChoices.FACE_REAR,
-            serial="GHI",
             position=3,
             secrets_group=secrets_groups[2],
             software_version=cls.software_versions[2],
@@ -706,6 +702,20 @@ def common_test_data(cls):
     )
     cls.devices[0].tags.set(Tag.objects.get_for_model(Device))
     cls.devices[1].tags.set(Tag.objects.get_for_model(Device)[:3])
+
+    # Device serial and asset_tag mirror the installed hardware asset, so the identity values the
+    # filter tests expect are carried by installed assets rather than set on the devices directly.
+    hardware_asset_active_status = Status.objects.get_for_model(HardwareAsset).get(name="Active")
+    for device, device_serial, device_asset_tag in zip(cls.devices, ("ABC", "DEF", "GHI"), ("1001", "1002", "1003")):
+        hardware_asset = HardwareAsset.objects.create(
+            device_type=device.device_type,
+            status=hardware_asset_active_status,
+            serial=device_serial,
+            asset_tag=device_asset_tag,
+            device=device,
+        )
+        device.installed_asset = hardware_asset
+        device.save()
 
     controller_statuses = iter(Status.objects.get_for_model(Controller))
     external_integrations = iter(ExternalIntegration.objects.all())
@@ -1828,6 +1838,10 @@ class DeviceTestCase(
         ("device_type", "device_type__id"),
         ("device_type", "device_type__model"),
         ("front_ports", "front_ports__id"),
+        ("hardware_assets", "hardware_assets__id"),
+        ("hardware_assets", "hardware_assets__serial"),
+        ("installed_asset", "installed_asset__id"),
+        ("installed_asset", "installed_asset__serial"),
         ("interfaces", "interfaces__id"),
         ("interfaces", "interfaces__name"),
         ("ip_addresses", "interfaces__ip_addresses__id"),
@@ -5017,3 +5031,46 @@ class InterfaceConnectionFilterSetTestCase(_ConnectionFilterSetTestMixin, Filter
         unfiltered_count = self.queryset.count()
         result = self.filterset({"location": "   "}, self.queryset).qs
         self.assertEqual(result.count(), unfiltered_count)
+
+
+class HardwareAssetTestCase(FilterTestCases.FilterTestCase, FilterTestCases.TenancyFilterTestCaseMixin):
+    queryset = HardwareAsset.objects.all()
+    filterset = HardwareAssetFilterSet
+    tenancy_related_name = "hardware_assets"
+    generic_filter_tests = [
+        ("asset_tag",),
+        ("comments",),
+        ("device", "device__id"),
+        ("device", "device__name"),
+        ("device_type", "device_type__id"),
+        ("device_type", "device_type__model"),
+        ("manufacturer", "device_type__manufacturer__id"),
+        ("manufacturer", "device_type__manufacturer__name"),
+        ("serial",),
+        ("status", "status__id"),
+        ("status", "status__name"),
+    ]
+
+    def test_is_installed(self):
+        self.assertQuerySetEqualAndNotEmpty(
+            self.filterset({"is_installed": True}, self.queryset).qs,
+            self.queryset.filter(installed_in__isnull=False),
+            ordered=False,
+        )
+        self.assertQuerySetEqualAndNotEmpty(
+            self.filterset({"is_installed": False}, self.queryset).qs,
+            self.queryset.filter(installed_in__isnull=True),
+            ordered=False,
+        )
+
+    def test_has_device(self):
+        self.assertQuerySetEqualAndNotEmpty(
+            self.filterset({"has_device": True}, self.queryset).qs,
+            self.queryset.filter(device__isnull=False),
+            ordered=False,
+        )
+        self.assertQuerySetEqualAndNotEmpty(
+            self.filterset({"has_device": False}, self.queryset).qs,
+            self.queryset.filter(device__isnull=True),
+            ordered=False,
+        )
